@@ -20,6 +20,10 @@ import openai                          # v1.x client
 import xlsxwriter                      # para formatação condicional no Excel
 from xlsxwriter.utility import xl_rowcol_to_cell
 
+import nltk
+from nltk.tokenize import sent_tokenize
+nltk.download('punkt')
+
 # --------------------------------------------------
 # 1) Configuração da página Streamlit
 # --------------------------------------------------
@@ -33,11 +37,9 @@ use_corr = st.sidebar.checkbox(
     "Corrigir pontuação das ementas com ChatGPT antes do upload?",
     help="Marque para usar GPT na correção e insira sua API Key abaixo."
 )
-api_key_corr = ""
-if use_corr:
-    api_key_corr = st.sidebar.text_input(
-        "OpenAI API Key para correção:", type="password"
-    )
+api_key_corr = st.sidebar.text_input(
+    "OpenAI API Key para correção:", type="password"
+) if use_corr else ""
 
 # --------------------------------------------------
 # 3) Upload do ZIP de ementas
@@ -50,10 +52,26 @@ if not uploaded_zip:
     st.stop()
 
 # --------------------------------------------------
-# 4) Funções de parsing e correção
+# 4) Funções auxiliares
 # --------------------------------------------------
+@st.cache_resource
+def load_sbert():
+    return SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+model = load_sbert()
+
+@st.cache_data(show_spinner=False)
+def get_embeddings(texts: list[str]) -> np.ndarray:
+    return model.encode(texts, batch_size=32, convert_to_tensor=False)
+
+def explode_sentencas(texto: str) -> list[str]:
+    # Usa sent_tokenize para dividir apenas por ponto final real
+    txt = re.sub(r'\s+', ' ', texto.replace('\n', ' '))
+    return [s.strip() for s in sent_tokenize(txt, language='portuguese') if len(s.strip()) > 3]
+
 @st.cache_data(show_spinner=False)
 def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
+    """Extrai e limpa ementas de um ZIP de PDFs."""
     with tempfile.TemporaryDirectory() as tmpdir:
         z = zipfile.ZipFile(BytesIO(zip_bytes))
         z.extractall(tmpdir)
@@ -67,13 +85,16 @@ def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
                 with pdfplumber.open(path) as pdf:
                     for p in pdf.pages:
                         txt += (p.extract_text() or "") + "\n"
+                # remove rodapés tipo "2 de 3"
                 txt = re.sub(r"(?m)^\s*\d+\s+de\s+\d+\s*$", "", txt)
+                # extrai nome e código
                 m = re.search(
                     r"UNIDADE CURRICULAR[:\s]*(.+?)\s*\(\s*(\d+)\s*\)",
                     txt, re.IGNORECASE | re.DOTALL
                 )
                 nome = m.group(1).strip() if m else fn
                 cod  = m.group(2).strip() if m else fn
+                # extrai conteúdo programático
                 m2 = re.search(
                     r"Conte[úu]do program[aá]tico\s*[:\-–]?\s*(.*?)(?=\n\s*Bibliografia|\Z)",
                     txt, re.IGNORECASE | re.DOTALL
@@ -86,36 +107,31 @@ def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
                 })
     return pd.DataFrame(regs)
 
-@st.cache_data(show_spinner=False)
-def corrige_texto(textos: list[str], api_key: str) -> list[str]:
-    client = openai.OpenAI(api_key=api_key)
-    out = []
-    for txt in textos:
-        if not isinstance(txt, str) or not txt.strip():
-            out.append(txt)
-            continue
-        resp = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role":"system","content":"Você corrige a pontuação deste texto sem alterar o conteúdo."},
-                {"role":"user",  "content": txt}
-            ],
-            temperature=0.0,
-            max_tokens=len(txt.split()) + 50
-        )
-        out.append(resp.choices[0].message.content.strip())
-    return out
-
 # --------------------------------------------------
-# 5) Parse e correção
+# 5) Parse e correção (opcional)
 # --------------------------------------------------
 df_ementas = parse_ementas(uploaded_zip.read())
 
 if use_corr and api_key_corr:
-    with st.spinner("Corrigindo pontuação dos conteúdos…"):
-        textos = df_ementas["CONTEUDO_PROGRAMATICO"].tolist()
-        corr = corrige_texto(textos, api_key_corr)
-        df_ementas["CONTEUDO_PROGRAMATICO"] = corr
+    client_corr = openai.OpenAI(api_key=api_key_corr)
+    with st.spinner("Corrigindo pontuação dos conteúdos..."):
+        def corrige(txt: str) -> str:
+            resp = client_corr.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role":"system","content":"Você corrige a pontuação deste texto sem alterar o conteúdo."},
+                    {"role":"user",  "content": txt}
+                ],
+                temperature=0.0,
+                max_tokens=len(txt.split()) + 50
+            )
+            return resp.choices[0].message.content.strip()
+
+        df_ementas["CONTEUDO_PROGRAMATICO"] = (
+            df_ementas["CONTEUDO_PROGRAMATICO"]
+              .apply(lambda t: corrige(t) if isinstance(t, str) and t.strip() else t)
+        )
+
     st.subheader("📖 Conteúdos Programáticos Corrigidos")
     st.dataframe(
         df_ementas[["COD_EMENTA","NOME UC","CONTEUDO_PROGRAMATICO"]]
@@ -135,9 +151,9 @@ if not uploaded_enade:
     st.stop()
 
 enade = pd.read_excel(uploaded_enade).dropna(subset=['DESCRIÇÃO'])
-# explode ENADE em frases (mantém ponto+vírgula)
 enade['FRASE_ENADE'] = (
-    enade['DESCRIÇÃO'].str.replace('\n',' ').str.split(r'[.;]')
+    enade['DESCRIÇÃO'].str.replace('\n',' ')
+          .str.split(r'[.;]')
 )
 enade_expl = (
     enade.explode('FRASE_ENADE')
@@ -146,7 +162,7 @@ enade_expl = (
 enade_expl = enade_expl[enade_expl['FRASE_ENADE'].str.len() > 5].reset_index(drop=True)
 
 # --------------------------------------------------
-# 7) Escolha da análise
+# 7) Seleção da análise
 # --------------------------------------------------
 analise = st.sidebar.selectbox("Escolha a Análise", [
     "Clusterização Ementas",
@@ -156,15 +172,7 @@ analise = st.sidebar.selectbox("Escolha a Análise", [
 ])
 
 # --------------------------------------------------
-# 8) Carrega SBERT
-# --------------------------------------------------
-@st.cache_resource
-def load_sbert():
-    return SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-model = load_sbert()
-
-# --------------------------------------------------
-# 9A) Clusterização
+# 8A) Clusterização de Ementas
 # --------------------------------------------------
 if analise == "Clusterização Ementas":
     st.header("Clusterização das UCs")
@@ -175,10 +183,6 @@ if analise == "Clusterização Ementas":
         .reset_index()
     )
     texts = df_group['CONTEUDO_PROGRAMATICO'].tolist()
-
-    @st.cache_data
-    def get_embeddings(textos):
-        return model.encode(textos, batch_size=32, convert_to_tensor=False)
     emb = get_embeddings(texts)
 
     max_k = min(10, len(emb))
@@ -186,7 +190,7 @@ if analise == "Clusterização Ementas":
     km = KMeans(n_clusters=k, random_state=42).fit(emb)
     df_group['cluster'] = km.labels_
 
-    # nomear clusters
+    # Nomear clusters via GPT
     use_gpt = st.sidebar.checkbox("Nomear clusters com ChatGPT")
     cluster_names = {}
     if use_gpt:
@@ -205,7 +209,7 @@ if analise == "Clusterização Ementas":
                         model="gpt-3.5-turbo",
                         messages=[
                             {"role":"system","content":"Você resume conjuntos de ementas em um nome curto."},
-                            {"role":"user",  "content":prompt}
+                            {"role":"user","content":prompt}
                         ],
                         temperature=0.0,
                         max_tokens=10,
@@ -214,24 +218,26 @@ if analise == "Clusterização Ementas":
                 except Exception as e:
                     st.error(f"Erro ao nomear cluster {cid}: {e}")
                     cluster_names[cid] = f"Cluster {cid}"
-            st.write("🔖 Nomes sugeridos:", cluster_names)
+            st.write("🔖 Nomes sugeridos pelo GPT:", cluster_names)
         else:
             st.sidebar.warning("Informe a API Key para clusters.")
-    if not use_gpt or not api_key_gpt:
-        for cid in range(k):
+    # Fallback centróide
+    for cid in range(k):
+        if cid not in cluster_names:
             cent = km.cluster_centers_[cid]
-            mask = np.where(km.labels_==cid)[0]
-            d = np.linalg.norm(np.array(emb)[mask] - cent, axis=1)
-            idx = mask[d.argmin()]
+            mask = np.where(km.labels_ == cid)[0]
+            dist = np.linalg.norm(np.array(emb)[mask] - cent, axis=1)
+            idx  = mask[dist.argmin()]
             cluster_names[cid] = df_group.at[idx, 'NOME UC']
 
     df_group['cluster_name'] = df_group['cluster'].map(cluster_names)
 
+    # Redução de dimensão
     method = st.radio("Redução de dimensão", ("PCA+t-SNE", "UMAP"))
     if method == "PCA+t-SNE":
-        pca50 = PCA(n_components=min(50,len(emb)-1),random_state=42).fit_transform(emb)
+        pca50 = PCA(n_components=min(50, len(emb)-1), random_state=42).fit_transform(emb)
         n_s = pca50.shape[0]
-        perp = min(30, max(1,n_s-1))
+        perp = min(30, max(1, n_s-1))
         coords = TSNE(n_components=2, random_state=42, perplexity=perp).fit_transform(pca50)
     else:
         coords = umap.UMAP(n_components=2, random_state=42).fit_transform(emb)
@@ -241,62 +247,71 @@ if analise == "Clusterização Ementas":
     pal = plt.cm.get_cmap("tab10", k)
     for cid in range(k):
         sub = df_group[df_group['cluster']==cid]
-        ax.scatter(sub['X'], sub['Y'], color=pal(cid), label=cluster_names[cid], s=40, alpha=0.7)
-    ax.set_xlabel("Dim 1"); ax.set_ylabel("Dim 2"); ax.legend(bbox_to_anchor=(1,1))
+        ax.scatter(sub['X'], sub['Y'], color=pal(cid),
+                   label=cluster_names[cid], s=40, alpha=0.7)
+    ax.set_xlabel("Dimensão 1"); ax.set_ylabel("Dimensão 2")
+    ax.legend(bbox_to_anchor=(1,1))
     st.pyplot(fig)
 
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
-        df_group[['COD_EMENTA','NOME UC','cluster','cluster_name']].to_excel(writer, index=False, sheet_name="Clusters")
+        df_group[['COD_EMENTA','NOME UC','cluster','cluster_name']].to_excel(
+            writer, index=False, sheet_name="Clusters"
+        )
     buf.seek(0)
     st.download_button("⬇️ Baixar Clusters", buf, "clusters_ucs.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # --------------------------------------------------
-# 9B) Matriz de Similaridade
+# 8B) Matriz de Similaridade
 # --------------------------------------------------
 elif analise == "Matriz de Similaridade":
     st.header("Matriz de Similaridade ENADE × Ementas")
     ementa_expl = (
-        df_ementas.assign(FRASE=lambda df: df['CONTEUDO_PROGRAMATICO']
-                          .str.replace('\n',' ')
-                          .str.split(r'\.'))
-                   .explode('FRASE')
-                   .assign(FRASE=lambda df: df['FRASE'].str.strip())
+        df_ementas.assign(
+            FRASE=lambda df: df['CONTEUDO_PROGRAMATICO'].apply(explode_sentencas)
+        )
+        .explode('FRASE')
     )
-    ementa_expl = ementa_expl[ementa_expl['FRASE'].str.len()>5]
+    ementa_expl = ementa_expl[ementa_expl['FRASE'].str.len()>3]
     with st.spinner("Calculando embeddings…"):
         emb_e = get_embeddings(ementa_expl['FRASE'].tolist())
         emb_n = get_embeddings(enade_expl['FRASE_ENADE'].tolist())
     sim = util.cos_sim(np.array(emb_n), np.array(emb_e)).cpu().numpy()
-    rec, idxs = [], ementa_expl.groupby('COD_EMENTA').indices
+    rec = []
+    idxs = ementa_expl.groupby('COD_EMENTA').indices
     for cod, sidx in idxs.items():
         for i,row in enade_expl.iterrows():
-            rec.append({"COD_EMENTA":cod,
-                        "FRASE_ENADE":row['FRASE_ENADE'],
-                        "MAX_SIM":float(sim[i,sidx].max())})
-    df_sim = (pd.DataFrame(rec)
-              .pivot(index='COD_EMENTA', columns='FRASE_ENADE', values='MAX_SIM')
-              .fillna(0))
+            rec.append({
+                "COD_EMENTA": cod,
+                "FRASE_ENADE": row['FRASE_ENADE'],
+                "MAX_SIM": float(sim[i, sidx].max())
+            })
+    df_sim = (
+        pd.DataFrame(rec)
+          .pivot(index='COD_EMENTA', columns='FRASE_ENADE', values='MAX_SIM')
+          .fillna(0)
+    )
     st.dataframe(df_sim.style.background_gradient(cmap="RdYlGn"))
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df_sim.to_excel(writer, sheet_name="Similaridade")
         wb, ws = writer.book, writer.sheets["Similaridade"]
-        r,c = df_sim.shape
+        r, c = df_sim.shape
         start = xl_rowcol_to_cell(1,1); end = xl_rowcol_to_cell(r,c)
         ws.conditional_format(f"{start}:{end}", {
-            'type':'3_color_scale','min_type':'min','min_color':"#FF0000",
+            'type':'3_color_scale',
+            'min_type':'min','min_color':"#FF0000",
             'mid_type':'percentile','mid_value':50,'mid_color':"#FFFF00",
             'max_type':'max','max_color':"#00FF00"
         })
     buf.seek(0)
-    st.download_button("⬇️ Baixar Matriz", buf,
+    st.download_button("⬇️ Baixar Matriz de Similaridade", buf,
                        "sim_enade_ementa.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # --------------------------------------------------
-# 9C) Matriz de Redundância
+# 8C) Matriz de Redundância
 # --------------------------------------------------
 elif analise == "Matriz de Redundância":
     st.header("Matriz de Redundância entre Ementas")
@@ -310,51 +325,50 @@ elif analise == "Matriz de Redundância":
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df_red.to_excel(writer, sheet_name="Redundância")
         wb, ws = writer.book, writer.sheets["Redundância"]
-        r,c = df_red.shape
+        r, c = df_red.shape
         start = xl_rowcol_to_cell(1,1); end = xl_rowcol_to_cell(r,c)
         ws.conditional_format(f"{start}:{end}", {
-            'type':'3_color_scale','min_type':'min','min_color':"#00FF00",
+            'type':'3_color_scale',
+            'min_type':'min','min_color':"#00FF00",
             'mid_type':'percentile','mid_value':50,'mid_color':"#FFFF00",
             'max_type':'max','max_color':"#FF0000"
         })
     buf.seek(0)
-    st.download_button("⬇️ Baixar Redundância", buf,
+    st.download_button("⬇️ Baixar Matriz de Redundância", buf,
                        "redundancia_uc.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # --------------------------------------------------
-# 9D) Análise Ementa vs ENADE
+# 8D) Análise Ementa vs ENADE
 # --------------------------------------------------
 else:
     st.header("Análise Ementa vs ENADE")
     df_ctx = df_ementas.copy()
     df_ctx['FRASE'] = df_ctx['CONTEUDO_PROGRAMATICO']\
-                        .str.replace('\n',' ')\
-                        .str.split(r'\.')
-    df_ctx = df_ctx.explode('FRASE').assign(FRASE=lambda d:d['FRASE'].str.strip())
-    df_ctx = df_ctx[df_ctx['FRASE'].str.len()>5].reset_index(drop=True)
-    lim = st.slider("Limiar de similaridade",0.0,1.0,0.6,step=0.05)
+                        .apply(explode_sentencas)
+    df_ctx = df_ctx.explode('FRASE').reset_index(drop=True)
+    lim = st.slider("Limiar de similaridade", 0.0, 1.0, 0.6, step=0.05)
     with st.spinner("Calculando embeddings…"):
         emb_f = get_embeddings(df_ctx['FRASE'].tolist())
         emb_n = get_embeddings(enade_expl['FRASE_ENADE'].tolist())
     simm = util.cos_sim(np.array(emb_n), np.array(emb_f)).cpu().numpy()
-    recs = []
+    records = []
     for i,row in enade_expl.iterrows():
         sims    = simm[i]
-        mx      = float(sims.max())
-        imx     = int(sims.argmax())
-        cmax    = df_ctx.loc[imx,'COD_EMENTA']
-        tmax    = df_ctx.loc[imx,'FRASE']
-        acima   = df_ctx.loc[sims>=lim,'COD_EMENTA'].unique().tolist()
-        recs.append({
-            "FRASE_ENADE":row['FRASE_ENADE'],
-            "DIMENSÃO":row['DIMENSAO'],
-            "MAX_SIM":round(mx,3),
-            "COD_EMENTA_MAX":cmax,
-            "TEXTO_MAX":tmax,
-            f"UCs_>={int(lim*100)}%":"; ".join(map(str,acima))
+        maxs    = float(sims.max())
+        idx     = int(sims.argmax())
+        cmax    = df_ctx.loc[idx,'COD_EMENTA']
+        tmax    = df_ctx.loc[idx,'FRASE']
+        above   = df_ctx.loc[sims>=lim,'COD_EMENTA'].unique().tolist()
+        records.append({
+            "FRASE_ENADE": row['FRASE_ENADE'],
+            "DIMENSÃO":    row['DIMENSAO'],
+            "MAX_SIM":     round(maxs,3),
+            "COD_EMENTA_MAX": cmax,
+            "TEXTO_MAX":      tmax,
+            f"UCs_>={int(lim*100)}%": "; ".join(map(str,above))
         })
-    df_res = pd.DataFrame(recs)
+    df_res = pd.DataFrame(records)
     st.subheader("Resultados por frase ENADE")
     st.dataframe(df_res)
     buf = BytesIO()
@@ -368,14 +382,14 @@ else:
     col = f"UCs_>={int(lim*100)}%"
     lst = df_res[col].str.split(r';\s*').explode().dropna().astype(str)
     freq = lst.value_counts().sort_index()
-    fig,ax=plt.subplots(figsize=(8,4))
+    fig,ax = plt.subplots(figsize=(8,4))
     ax.bar(freq.index,freq.values,color='skyblue')
     ax.set_xlabel("COD_EMENTA"); ax.set_ylabel("Ocorrências")
-    ax.set_title(f"Ementas em ≥ {int(lim*100)}%")
-    plt.xticks(rotation=45,ha='right');plt.tight_layout()
+    ax.set_title(f"Ementas em ≥ {int(lim*100)}% de similaridade")
+    plt.xticks(rotation=45,ha='right'); plt.tight_layout()
     st.pyplot(fig)
-    buff=BytesIO()
+    buff = BytesIO()
     fig.savefig(buff,format='png',dpi=300,bbox_inches='tight')
     buff.seek(0)
-    st.download_button("⬇️ Baixar gráfico",buff,
+    st.download_button("⬇️ Baixar gráfico de frequência", buff,
                        "frequencia.png","image/png")
