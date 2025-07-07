@@ -273,45 +273,76 @@ if analise == "Clusterização Ementas":
 # --------------------------------------------------
 elif analise == "Matriz de Similaridade":
     st.header("Matriz de Similaridade ENADE × Ementas")
+
+    # Explode em frases as ementas
     ementa_expl = (
-        df_ementas.assign(
-            FRASE=lambda df: df['CONTEUDO_PROGRAMATICO'].apply(explode_sentencas)
-        )
+        df_ementas
+        .assign(FRASE=lambda df: df['CONTEUDO_PROGRAMATICO'].apply(explode_sentencas))
         .explode('FRASE')
     )
-    ementa_expl = ementa_expl[ementa_expl['FRASE'].str.len()>3]
+    ementa_expl = ementa_expl[ementa_expl['FRASE'].str.len() > 3]
+
+    # Calcula embeddings
     with st.spinner("Calculando embeddings…"):
         emb_e = get_embeddings(ementa_expl['FRASE'].tolist())
         emb_n = get_embeddings(enade_expl['FRASE_ENADE'].tolist())
+
+    # Similaridade coseno
     sim = util.cos_sim(np.array(emb_n), np.array(emb_e)).cpu().numpy()
-    rec = []; idxs = ementa_expl.groupby('COD_EMENTA').indices
+
+    # Constrói lista de registros para pivot
+    rec = []
+    idxs = ementa_expl.groupby('COD_EMENTA').indices
     for cod, sidx in idxs.items():
-        for i,row in enade_expl.iterrows():
+        for i, row in enade_expl.iterrows():
             rec.append({
-                "COD_EMENTA": cod,
-                "FRASE_ENADE": row['FRASE_ENADE'],
-                "MAX_SIM": float(sim[i, sidx].max())
+                "COD_EMENTA":   cod,
+                "FRASE_ENADE":  row['FRASE_ENADE'],
+                "MAX_SIM":      float(sim[i, sidx].max())
             })
-    df_sim = (pd.DataFrame(rec)
-                .pivot(index='COD_EMENTA', columns='FRASE_ENADE', values='MAX_SIM')
-                .fillna(0))
+
+    # DataFrame e pivot_table para evitar duplicatas
+    df_rec = pd.DataFrame(rec)
+    df_sim = df_rec.pivot_table(
+        index='COD_EMENTA',
+        columns='FRASE_ENADE',
+        values='MAX_SIM',
+        aggfunc='max',    # pega a maior similaridade em caso de duplicatas
+        fill_value=0
+    )
+
+    # Exibe no Streamlit
     st.dataframe(df_sim.style.background_gradient(cmap="RdYlGn"))
+
+    # Prepara download em Excel com formatação condicional
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df_sim.to_excel(writer, sheet_name="Similaridade")
-        wb, ws = writer.book, writer.sheets["Similaridade"]
-        r, c = df_sim.shape
-        start = xl_rowcol_to_cell(1,1); end = xl_rowcol_to_cell(r,c)
+        wb  = writer.book
+        ws  = writer.sheets["Similaridade"]
+        # determina range
+        (r, c) = df_sim.shape
+        start = xl_rowcol_to_cell(1, 1)
+        end   = xl_rowcol_to_cell(r, c)
+        # 3-color scale: vermelho (baixo), amarelo (médio), verde (alto)
         ws.conditional_format(f"{start}:{end}", {
-            'type':'3_color_scale','min_type':'min','min_color':"#FF0000",
-            'mid_type':'percentile','mid_value':50,'mid_color':"#FFFF00",
-            'max_type':'max','max_color':"#00FF00"
+            'type':       '3_color_scale',
+            'min_type':   'min',
+            'min_color':  "#FF0000",
+            'mid_type':   'percentile',
+            'mid_value':  50,
+            'mid_color':  "#FFFF00",
+            'max_type':   'max',
+            'max_color':  "#00FF00"
         })
     buf.seek(0)
-    st.download_button("⬇️ Baixar Matriz de Similaridade", buf,
-                       "sim_enade_ementa.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
+    st.download_button(
+        label="⬇️ Baixar Matriz de Similaridade",
+        data=buf,
+        file_name="sim_enade_ementa.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 # --------------------------------------------------
 # 11C) Matriz de Redundância
 # --------------------------------------------------
