@@ -45,16 +45,13 @@ def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
                 with pdfplumber.open(path) as pdf:
                     for p in pdf.pages:
                         txt += (p.extract_text() or "") + "\n"
-                # remove rodapés tipo "2 de 3"
                 txt = re.sub(r"(?m)^\s*\d+\s+de\s+\d+\s*$", "", txt)
-                # extrai nome e código
                 m = re.search(
                     r"UNIDADE CURRICULAR[:\s]*(.+?)\s*\(\s*(\d+)\s*\)",
                     txt, re.IGNORECASE | re.DOTALL
                 )
                 nome = m.group(1).strip() if m else fn
                 cod  = m.group(2).strip() if m else fn
-                # extrai conteúdo programático
                 m2 = re.search(
                     r"Conte[úu]do program[aá]tico\s*[:\-–]?\s*(.*?)(?=\n\s*Bibliografia|\Z)",
                     txt, re.IGNORECASE | re.DOTALL
@@ -180,7 +177,9 @@ if analise == "Clusterização Ementas":
     else:
         coords = umap.UMAP(n_components=2, random_state=42).fit_transform(emb)
 
-    df_group[['X','Y']] = coords[:,0], coords[:,1]
+    # atribuição corrigida das colunas X e Y
+    df_group['X'] = coords[:, 0]
+    df_group['Y'] = coords[:, 1]
 
     fig, ax = plt.subplots(figsize=(8,6))
     palette = plt.cm.get_cmap("tab10", k)
