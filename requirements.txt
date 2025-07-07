@@ -9,5 +9,4 @@ matplotlib>=3.4.3
 openai>=0.27.0
 umap-learn>=0.5.3
 xlsxwriter>=3.0.3
-nltk>=3.7
 openpyxl>=3.0.0
