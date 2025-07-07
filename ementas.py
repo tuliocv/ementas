@@ -331,7 +331,7 @@ elif analise == "Matriz de Redundância":
         start = xl_rowcol_to_cell(1,1); end = xl_rowcol_to_cell(r,c)
         ws.conditional_format(f"{start}:{end}", {
             'type':'3_color_scale','min_type':'min','min_color':"#00FF00",
-            'mid_type':'percentile','mid_value':50,'mid_color':"#FFFF00',
+            'mid_type':'percentile','mid_value':50,'mid_color':"#FFFF00",
             'max_type':'max','max_color':"#FF0000"
         })
     buf.seek(0)
