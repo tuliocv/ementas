@@ -45,16 +45,13 @@ def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
                 with pdfplumber.open(path) as pdf:
                     for p in pdf.pages:
                         txt += (p.extract_text() or "") + "\n"
-                # remove rodapés tipo "2 de 3"
                 txt = re.sub(r"(?m)^\s*\d+\s+de\s+\d+\s*$", "", txt)
-                # extrai nome e código
                 m = re.search(
                     r"UNIDADE CURRICULAR[:\s]*(.+?)\s*\(\s*(\d+)\s*\)",
                     txt, re.IGNORECASE | re.DOTALL
                 )
                 nome = m.group(1).strip() if m else fn
                 cod  = m.group(2).strip() if m else fn
-                # extrai conteúdo programático
                 m2 = re.search(
                     r"Conte[úu]do program[aá]tico\s*[:\-–]?\s*(.*?)(?=\n\s*Bibliografia|\Z)",
                     txt, re.IGNORECASE | re.DOTALL
@@ -69,7 +66,7 @@ def parse_ementas(zip_bytes: bytes) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def get_embeddings(texts: list[str]) -> np.ndarray:
-    """Gera embeddings SBERT em batches (usa o model global)."""
+    """Gera embeddings SBERT em batches."""
     return model.encode(texts, batch_size=32, convert_to_tensor=False)
 
 # --------------------------------------------------
@@ -82,7 +79,6 @@ if not uploaded_zip:
 
 df_ementas = parse_ementas(uploaded_zip.read())
 st.success(f"{len(df_ementas)} ementas carregadas.")
-st.dataframe(df_ementas.head())
 
 # --------------------------------------------------
 # 4) Correção de pontuação opcional via ChatGPT
@@ -105,10 +101,18 @@ if use_corr:
                     max_tokens=len(txt.split()) + 50
                 )
                 return resp.choices[0].message.content.strip()
+
             df_ementas["CONTEUDO_PROGRAMATICO"] = (
                 df_ementas["CONTEUDO_PROGRAMATICO"]
                   .apply(lambda t: corrige(t) if isinstance(t, str) and t.strip() else t)
             )
+
+        # Exibe tabela com conteúdos programáticos corrigidos
+        st.subheader("📖 Conteúdos Programáticos Corrigidos")
+        st.dataframe(
+            df_ementas[["COD_EMENTA", "NOME UC", "CONTEUDO_PROGRAMATICO"]]
+            .rename(columns={"CONTEUDO_PROGRAMATICO": "Conteúdo Corrigido"})
+        )
     else:
         st.sidebar.warning("Informe a API Key para habilitar correção.")
 
