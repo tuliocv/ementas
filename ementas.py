@@ -177,7 +177,6 @@ if analise == "Clusterização Ementas":
     else:
         coords = umap.UMAP(n_components=2, random_state=42).fit_transform(emb)
 
-    # atribuição corrigida das colunas X e Y
     df_group['X'] = coords[:, 0]
     df_group['Y'] = coords[:, 1]
 
@@ -185,8 +184,10 @@ if analise == "Clusterização Ementas":
     palette = plt.cm.get_cmap("tab10", k)
     for cid in range(k):
         sub = df_group[df_group['cluster']==cid]
-        ax.scatter(sub['X'], sub['Y'], color=palette(cid),
-                   label=cluster_names[cid], s=40, alpha=0.7)
+        ax.scatter(sub['X'], sub['Y'],
+                   color=palette(cid),
+                   label=cluster_names[cid],
+                   s=40, alpha=0.7)
     ax.set_xlabel("Dimensão 1"); ax.set_ylabel("Dimensão 2")
     ax.legend(title="Clusters", bbox_to_anchor=(1,1))
     st.pyplot(fig)
@@ -195,7 +196,6 @@ if analise == "Clusterização Ementas":
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df_out.to_excel(writer, index=False, sheet_name="Clusters")
-        writer.save()
     buf.seek(0)
     st.download_button("⬇️ Baixar Clusters", buf, "clusters_ucs.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -251,7 +251,6 @@ elif analise == "Matriz de Similaridade":
             'mid_type': 'percentile','mid_value':50,'mid_color': "#FFFF00",
             'max_type': 'max',    'max_color': "#00FF00"
         })
-        writer.save()
     buf.seek(0)
     st.download_button("⬇️ Baixar Matriz de Similaridade",
                        buf, "sim_enade_ementa_colorido.xlsx",
@@ -290,7 +289,6 @@ elif analise == "Matriz de Redundância":
             'mid_type': 'percentile','mid_value':50,'mid_color': "#FFFF00",
             'max_type': 'max',    'max_color': "#FF0000"
         })
-        writer.save()
     buf.seek(0)
     st.download_button("⬇️ Baixar Matriz de Redundância",
                        buf, "redundancia_uc_colorida.xlsx",
@@ -343,7 +341,6 @@ else:
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
         df_res.to_excel(writer, index=False, sheet_name="Analise_ENADE")
-        writer.save()
     buf.seek(0)
     st.download_button("⬇️ Baixar Análise vs ENADE",
                        buf, "analise_ementa_vs_enade.xlsx",
