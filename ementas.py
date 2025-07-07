@@ -1,5 +1,6 @@
 # analiseementasstreamlit.py
 # -*- coding: utf-8 -*-
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -20,7 +21,7 @@ import xlsxwriter               # para formatação condicional no Excel
 from xlsxwriter.utility import xl_rowcol_to_cell
 
 # --------------------------------------------------
-# 1) Configurações da página Streamlit
+# 1) Configuração da página Streamlit
 # --------------------------------------------------
 st.set_page_config(layout="wide")
 st.title("📂📑 Análise de Ementas via pasta .zip")
@@ -173,9 +174,12 @@ if analise == "Clusterização Ementas":
     method = st.radio("Redução de dimensão", ("PCA+t-SNE", "UMAP"))
     if method == "PCA+t-SNE":
         pca50 = PCA(n_components=min(50, len(emb)-1), random_state=42).fit_transform(emb)
-        coords = TSNE(n_components=2, random_state=42, perplexity=30).fit_transform(pca50)
+        n_samples  = pca50.shape[0]
+        perplexity = min(30, max(1, n_samples - 1))
+        coords = TSNE(n_components=2, random_state=42, perplexity=perplexity).fit_transform(pca50)
     else:
         coords = umap.UMAP(n_components=2, random_state=42).fit_transform(emb)
+
     df_group[['X','Y']] = coords[:,0], coords[:,1]
 
     fig, ax = plt.subplots(figsize=(8,6))
