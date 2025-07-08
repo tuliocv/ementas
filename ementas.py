@@ -3,6 +3,7 @@
 
 import streamlit as st
 import pandas as pd
+pd.set_option('display.max_colwidth', None)
 import numpy as np
 import re
 import os
