@@ -30,7 +30,7 @@ st.title("📂📑 Análise de Ementas via pasta .zip")
 # 2) Pergunta de correção antes do upload de ementas
 # --------------------------------------------------
 use_corr = st.sidebar.checkbox(
-    "Corrigir pontuação das ementas com ChatGPT antes do upload?",
+    "Corrigir pontuação das ementas com ChatGPT (gpt-4o-mini) antes do upload?",
     help="Marque para usar GPT na correção e insira sua API Key abaixo."
 )
 api_key_corr = ""
@@ -124,9 +124,9 @@ if use_corr and api_key_corr:
     with st.spinner("Corrigindo pontuação dos conteúdos…"):
         def corrige(txt: str) -> str:
             resp = client_corr.chat.completions.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4o-mini",
                 messages=[
-                    {"role":"system","content":"Você corrige a pontuação deste texto sem alterar o conteúdo."},
+                    {"role":"system","content":"Você corrige a pontuação deste texto sem alterar o conteúdo e sentido. Cada frase deverá conter apenas um único ponto final. Não utilize abreviações."},
                     {"role":"user",  "content": txt}
                 ],
                 temperature=0.0,
